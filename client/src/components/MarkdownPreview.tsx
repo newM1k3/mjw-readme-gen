@@ -2,6 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+
+// README banners (e.g. the MJW banner) use <div align="center">, which the
+// default GFM sanitize schema doesn't allowlist — extend it rather than
+// disabling sanitization, since README content is LLM-generated from
+// untrusted repository input and must not be rendered as raw, unsanitized HTML.
+const readmeSchema = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    div: [...(defaultSchema.attributes?.div || []), "align"],
+    img: [...(defaultSchema.attributes?.img || []), "align", "width", "height"],
+  },
+};
 import { toast } from "sonner";
 import { Copy, Download, Eye, Code2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -134,7 +148,10 @@ export function MarkdownPreview({
       <div className="flex-1 overflow-auto" ref={containerRef}>
         {tab === "preview" ? (
           <div className="markdown-body p-6">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeRaw, [rehypeSanitize, readmeSchema]]}
+            >
               {displayContent}
             </ReactMarkdown>
             <div ref={bottomRef} />

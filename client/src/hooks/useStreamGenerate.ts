@@ -1,21 +1,17 @@
 /**
  * useStreamGenerate
  *
- * Consumes the SSE streaming endpoints:
- *   POST /api/readme/stream-zip
- *   POST /api/readme/stream-url
- *   POST /api/readme/stream-rerun
- *
- * Returns:
- *   streamingText  — partial README text accumulated so far (empty string when idle)
- *   isStreaming    — true while the SSE connection is open
- *   startZip       — start a ZIP-based generation
- *   startUrl       — start a GitHub URL-based generation
- *   startRerun     — re-run from a stored generation id
- *   abort          — cancel the in-flight stream
+ * Netlify Functions can't hold open SSE connections, so this calls the
+ * existing non-streaming tRPC mutations (readme.generateZip / generateUrl /
+ * rerun) instead of the old /api/readme/stream-* SSE routes. The external
+ * interface (streamingText, isStreaming, startZip/startUrl/startRerun,
+ * onToken/onDone/onError callbacks) is unchanged so callers don't need to
+ * know the difference — `streamingText` just jumps straight to the full
+ * README once the request resolves, rather than growing token by token.
  */
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
+import { trpc } from "@/lib/trpc";
 
 export interface GenerationResult {
   id: number;
@@ -69,82 +65,32 @@ type StreamCallbacks = {
 export function useStreamGenerate() {
   const [streamingText, setStreamingText] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+
+  const generateZip = trpc.readme.generateZip.useMutation();
+  const generateUrl = trpc.readme.generateUrl.useMutation();
+  const rerun = trpc.readme.rerun.useMutation();
 
   const abort = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
     setIsStreaming(false);
   }, []);
 
-  const runStream = useCallback(
-    async (endpoint: string, body: object, callbacks: StreamCallbacks) => {
-      // Cancel any in-flight stream
-      abortRef.current?.abort();
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-
+  const run = useCallback(
+    async <TInput>(
+      mutateAsync: (input: TInput) => Promise<GenerationResult>,
+      input: TInput,
+      callbacks: StreamCallbacks
+    ) => {
       setStreamingText("");
       setIsStreaming(true);
-
       try {
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify(body),
-          signal: ctrl.signal,
-        });
-
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`HTTP ${res.status}: ${errText}`);
-        }
-
-        const reader = res.body?.getReader();
-        if (!reader) throw new Error("No response body");
-
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith("data: ")) continue;
-
-            try {
-              const event = JSON.parse(trimmed.slice(6));
-
-              if (event.type === "token") {
-                setStreamingText((prev) => prev + event.text);
-                callbacks.onToken?.(event.text);
-              } else if (event.type === "done") {
-                callbacks.onDone?.(event.generation as GenerationResult);
-              } else if (event.type === "error") {
-                throw new Error(event.message || "Stream error");
-              }
-            } catch (parseErr: any) {
-              // If it's our thrown Error, re-throw; otherwise skip malformed chunk
-              if (parseErr?.message && !parseErr.message.startsWith("Unexpected token")) {
-                throw parseErr;
-              }
-            }
-          }
-        }
+        const generation = await mutateAsync(input);
+        setStreamingText(generation.readme);
+        callbacks.onToken?.(generation.readme);
+        callbacks.onDone?.(generation);
       } catch (err: any) {
-        if (err?.name !== "AbortError") {
-          callbacks.onError?.(err?.message || "Generation failed");
-        }
+        callbacks.onError?.(err?.message || "Generation failed");
       } finally {
         setIsStreaming(false);
-        abortRef.current = null;
       }
     },
     []
@@ -152,20 +98,20 @@ export function useStreamGenerate() {
 
   const startZip = useCallback(
     (params: ZipParams, callbacks: StreamCallbacks) =>
-      runStream("/api/readme/stream-zip", params, callbacks),
-    [runStream]
+      run((input: ZipParams) => generateZip.mutateAsync(input), params, callbacks),
+    [run, generateZip]
   );
 
   const startUrl = useCallback(
     (params: UrlParams, callbacks: StreamCallbacks) =>
-      runStream("/api/readme/stream-url", params, callbacks),
-    [runStream]
+      run((input: UrlParams) => generateUrl.mutateAsync(input), params, callbacks),
+    [run, generateUrl]
   );
 
   const startRerun = useCallback(
     (params: RerunParams, callbacks: StreamCallbacks) =>
-      runStream("/api/readme/stream-rerun", params, callbacks),
-    [runStream]
+      run((input: RerunParams) => rerun.mutateAsync(input), params, callbacks),
+    [run, rerun]
   );
 
   return { streamingText, isStreaming, startZip, startUrl, startRerun, abort };

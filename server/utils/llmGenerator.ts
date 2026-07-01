@@ -1,5 +1,4 @@
-import { invokeLLM, listLLMModels } from "../_core/llm";
-import { ENV } from "../_core/env";
+import { invokeLLM, listLLMModels, streamLLM } from "../_core/llm";
 
 // MJW Design banner — centered HTML block prepended to every generated README
 export const MJW_BANNER = `<div align="center">
@@ -76,20 +75,14 @@ export interface ModelInfo {
 export async function getAvailableModels(): Promise<ModelInfo[]> {
   try {
     const { data } = await listLLMModels();
-    const preferred = ["claude", "gpt", "gemini"];
-    const sorted = (data || []).sort((a: any, b: any) => {
-      const ai = preferred.findIndex((p) => a.id.toLowerCase().includes(p));
-      const bi = preferred.findIndex((p) => b.id.toLowerCase().includes(p));
-      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
-    });
-    return sorted.slice(0, 6).map((m: any) => ({
+    return data.slice(0, 6).map((m) => ({
       id: m.id,
-      label: m.id,
+      label: m.display_name || m.id,
     }));
   } catch {
     return [
-      { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
-      { id: "gpt-4o", label: "GPT-4o" },
+      { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+      { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
     ];
   }
 }
@@ -100,8 +93,8 @@ export async function generateReadme(opts: GenerateOptions): Promise<string> {
 
   const response = await invokeLLM({
     model: modelId,
+    system: buildSystemPrompt(referenceReadme),
     messages: [
-      { role: "system", content: buildSystemPrompt(referenceReadme) },
       {
         role: "user",
         content: `Generate the README.md for this repository.\n\nREPOSITORY ANALYSIS:\n${context}`,
@@ -109,14 +102,14 @@ export async function generateReadme(opts: GenerateOptions): Promise<string> {
     ],
   });
 
-  const rawContent = response?.choices?.[0]?.message?.content;
-  const content: string = typeof rawContent === "string" ? rawContent : (typeof response === "string" ? response : "");
+  const textBlock = response.content?.find((b) => b.type === "text");
+  const content = textBlock?.text || "";
 
   const readme = content.trim();
   return includeBanner ? MJW_BANNER + readme : readme;
 }
 
-/** Streaming generation — calls the Forge API with stream:true and pipes SSE chunks.
+/** Streaming generation — calls Anthropic with stream:true and pipes SSE chunks.
  *  Calls `onToken` for each text delta, resolves with the full assembled text. */
 export async function streamReadme(opts: {
   context: string;
@@ -128,69 +121,18 @@ export async function streamReadme(opts: {
 }): Promise<string> {
   const { context, modelId, referenceReadme, includeBanner = true, onToken, signal } = opts;
 
-  const apiUrl =
-    ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
-      ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
-      : "https://forge.manus.im/v1/chat/completions";
-
-  const messages = [
-    { role: "system", content: buildSystemPrompt(referenceReadme) },
-    { role: "user", content: `Generate the README.md for this repository.\n\nREPOSITORY ANALYSIS:\n${context}` },
-  ];
-
-  const payload: Record<string, unknown> = {
-    messages,
-    stream: true,
-  };
-  if (modelId) payload.model = modelId;
-
-  const llmRes = await fetch(apiUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
-    },
-    body: JSON.stringify(payload),
+  const assembled = await streamLLM({
+    model: modelId,
+    system: buildSystemPrompt(referenceReadme),
+    messages: [
+      {
+        role: "user",
+        content: `Generate the README.md for this repository.\n\nREPOSITORY ANALYSIS:\n${context}`,
+      },
+    ],
+    onToken,
     signal,
   });
-
-  if (!llmRes.ok) {
-    const errText = await llmRes.text();
-    throw new Error(`LLM streaming error ${llmRes.status}: ${errText}`);
-  }
-
-  const reader = llmRes.body?.getReader();
-  if (!reader) throw new Error("No response body from LLM");
-
-  const decoder = new TextDecoder();
-  let assembled = "";
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed === "data: [DONE]") continue;
-      if (!trimmed.startsWith("data: ")) continue;
-
-      try {
-        const json = JSON.parse(trimmed.slice(6));
-        const delta = json?.choices?.[0]?.delta?.content;
-        if (typeof delta === "string" && delta.length > 0) {
-          assembled += delta;
-          onToken(delta);
-        }
-      } catch {
-        // Malformed SSE chunk — skip
-      }
-    }
-  }
 
   const readme = assembled.trim();
   return includeBanner ? MJW_BANNER + readme : readme;

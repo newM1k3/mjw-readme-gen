@@ -2,6 +2,8 @@ import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import type { Express, Request, Response } from "express";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
+import { ENV } from "./env";
+import { completeGithubLogin } from "./githubOAuth";
 import { sdk } from "./sdk";
 
 function getQueryParam(req: Request, key: string): string | undefined {
@@ -10,6 +12,22 @@ function getQueryParam(req: Request, key: string): string | undefined {
 }
 
 export function registerOAuthRoutes(app: Express) {
+  // Redirects to GitHub's authorize screen. The client links here directly
+  // (see client/src/const.ts getLoginUrl) but this server-side route is kept
+  // as a stable entry point too.
+  app.get("/api/oauth/login", (req: Request, res: Response) => {
+    const redirectUri = `${req.protocol}://${req.get("host")}/api/oauth/callback`;
+    const state = Buffer.from(redirectUri).toString("base64");
+
+    const url = new URL("https://github.com/login/oauth/authorize");
+    url.searchParams.set("client_id", ENV.githubClientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("state", state);
+    url.searchParams.set("scope", "read:user user:email");
+
+    res.redirect(302, url.toString());
+  });
+
   app.get("/api/oauth/callback", async (req: Request, res: Response) => {
     const code = getQueryParam(req, "code");
     const state = getQueryParam(req, "state");
@@ -20,19 +38,14 @@ export function registerOAuthRoutes(app: Express) {
     }
 
     try {
-      const tokenResponse = await sdk.exchangeCodeForToken(code, state);
-      const userInfo = await sdk.getUserInfo(tokenResponse.accessToken);
-
-      if (!userInfo.openId) {
-        res.status(400).json({ error: "openId missing from user info" });
-        return;
-      }
+      const redirectUri = Buffer.from(state, "base64").toString("utf-8");
+      const userInfo = await completeGithubLogin(code, redirectUri);
 
       await db.upsertUser({
         openId: userInfo.openId,
-        name: userInfo.name || null,
-        email: userInfo.email ?? null,
-        loginMethod: userInfo.loginMethod ?? userInfo.platform ?? null,
+        name: userInfo.name,
+        email: userInfo.email,
+        loginMethod: "github",
         lastSignedIn: new Date(),
       });
 
