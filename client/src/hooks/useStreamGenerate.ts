@@ -39,6 +39,7 @@ interface ZipParams {
   referenceReadme?: string;
   templateName?: string;
   includeBanner?: boolean;
+  projectNameOverride?: string;
 }
 
 interface UrlParams {
@@ -47,6 +48,7 @@ interface UrlParams {
   referenceReadme?: string;
   templateName?: string;
   includeBanner?: boolean;
+  projectNameOverride?: string;
 }
 
 interface RerunParams {

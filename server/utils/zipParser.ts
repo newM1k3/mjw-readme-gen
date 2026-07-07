@@ -48,6 +48,25 @@ const STACK_MARKERS: Record<string, string[]> = {
   "Vite": ["vite"],
 };
 
+export const SCAFFOLD_NAMES = new Set([
+  "project",
+  "vite-react-typescript-starter",
+  "vite-react-ts-starter",
+  "my-app",
+  "my-project",
+  "starter",
+  "template",
+  "app",
+  "new-app",
+  "react-app",
+  "ts-app",
+]);
+
+export function isScaffoldName(name: string): boolean {
+  const trimmed = (name || "").trim();
+  return !trimmed || SCAFFOLD_NAMES.has(trimmed.toLowerCase());
+}
+
 function isIgnored(parts: string[]): boolean {
   return parts.some((p) => IGNORED_DIRS.has(p.toLowerCase()));
 }
@@ -164,6 +183,8 @@ export interface RepoAnalysis {
   configFiles: Record<string, string>;
   existingReadme: string;
   tree: string;
+  /** Optional manual override — when set, replaces the auto-detected projectName in the LLM context */
+  projectNameOverride?: string;
 }
 
 export async function analyzeZip(buffer: Buffer): Promise<RepoAnalysis> {
@@ -204,12 +225,14 @@ export async function analyzeZip(buffer: Buffer): Promise<RepoAnalysis> {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 12) as [string, number][];
 
-  // Guess project name
   let projectName = "Project";
   if (configs["package.json"]) {
     try {
-      projectName = JSON.parse(configs["package.json"]).name || root || "Project";
-    } catch {}
+      const pkgName = JSON.parse(configs["package.json"]).name || "";
+      projectName = isScaffoldName(pkgName) ? (root || "Project") : pkgName;
+    } catch {
+      projectName = root || "Project";
+    }
   } else if (root) {
     projectName = root;
   }
@@ -232,8 +255,9 @@ export async function analyzeZip(buffer: Buffer): Promise<RepoAnalysis> {
 }
 
 export function buildContext(analysis: RepoAnalysis): string {
+  const resolvedName = analysis.projectNameOverride?.trim() || analysis.projectName;
   const parts: string[] = [
-    `PROJECT NAME (guess): ${analysis.projectName}`,
+    `PROJECT NAME: ${resolvedName}`,
     `TOTAL SOURCE FILES: ${analysis.fileCount}`,
     `DETECTED STACK: ${analysis.stack.join(", ") || "Unknown"}`,
     `DEPLOYMENT TARGETS: ${analysis.deployment.join(", ") || "None detected"}`,

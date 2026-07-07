@@ -137,6 +137,7 @@ export default function GeneratorPage() {
   const [sourceMode, setSourceMode] = useState<"zip" | "github">("zip");
   const [zipFile, setZipFile] = useState<File | null>(null);
   const [githubUrl, setGithubUrl] = useState("");
+  const [projectNameOverride, setProjectNameOverride] = useState("");
 
   // Style reference
   const [referenceContent, setReferenceContent] = useState("");
@@ -244,6 +245,8 @@ export default function GeneratorPage() {
       onToken: () => { setIsAnalyzing(false); },
     };
 
+    const nameOverride = projectNameOverride.trim() || undefined;
+
     if (sourceMode === "zip" && zipFile) {
       const arrayBuffer = await zipFile.arrayBuffer();
       const uint8 = new Uint8Array(arrayBuffer);
@@ -252,13 +255,13 @@ export default function GeneratorPage() {
       const base64 = btoa(binary);
       setIsAnalyzing(true);
       await startZip(
-        { fileBase64: base64, fileName: zipFile.name, modelId, referenceReadme, templateName, includeBanner },
+        { fileBase64: base64, fileName: zipFile.name, modelId, referenceReadme, templateName, includeBanner, projectNameOverride: nameOverride },
         wrappedCallbacks
       );
     } else {
       setIsAnalyzing(true);
       await startUrl(
-        { url: githubUrl.trim(), modelId, referenceReadme, templateName, includeBanner },
+        { url: githubUrl.trim(), modelId, referenceReadme, templateName, includeBanner, projectNameOverride: nameOverride },
         wrappedCallbacks
       );
     }
@@ -439,6 +442,19 @@ export default function GeneratorPage() {
                   className="w-full bg-card border border-border px-3 py-2 text-xs font-mono focus:outline-none focus:border-primary placeholder:text-muted-foreground/50"
                 />
               )}
+            </section>
+
+            {/* Project Name Override */}
+            <section className="border-b border-border p-4">
+              <div className="text-[10px] font-bold tracking-[0.2em] uppercase text-muted-foreground mb-1">Project Name</div>
+              <div className="text-[10px] text-muted-foreground mb-2">Override auto-detected name</div>
+              <input
+                type="text"
+                placeholder="e.g. PuzzleFlow AI"
+                value={projectNameOverride}
+                onChange={(e) => setProjectNameOverride(e.target.value)}
+                className="w-full bg-card border border-border px-3 py-2 text-xs font-mono focus:outline-none focus:border-primary placeholder:text-muted-foreground/50"
+              />
             </section>
 
             {/* Model Picker */}

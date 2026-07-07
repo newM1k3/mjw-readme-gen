@@ -1,9 +1,50 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import { buildContext } from "./utils/zipParser";
+import { describe, expect, it } from "vitest";
+import {
+  buildContext,
+  isScaffoldName,
+  SCAFFOLD_NAMES,
+} from "./utils/zipParser";
 import { parseGithubRepo } from "./utils/githubFetch";
-import { MJW_BANNER } from "./utils/llmGenerator";
+import { MJW_BANNER, buildSystemPrompt } from "./utils/llmGenerator";
 
-// ─── ZIP Parser tests ─────────────────────────────────────────────────────
+// ─── isScaffoldName ───────────────────────────────────────────────────────
+
+describe("isScaffoldName", () => {
+  it("identifies known scaffold names", () => {
+    expect(isScaffoldName("vite-react-typescript-starter")).toBe(true);
+    expect(isScaffoldName("my-app")).toBe(true);
+    expect(isScaffoldName("starter")).toBe(true);
+    expect(isScaffoldName("template")).toBe(true);
+    expect(isScaffoldName("project")).toBe(true);
+    expect(isScaffoldName("app")).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(isScaffoldName("MY-APP")).toBe(true);
+    expect(isScaffoldName("Starter")).toBe(true);
+    expect(isScaffoldName("VITE-REACT-TYPESCRIPT-STARTER")).toBe(true);
+  });
+
+  it("returns false for real project names", () => {
+    expect(isScaffoldName("puzzle-flow-ai")).toBe(false);
+    expect(isScaffoldName("mjw-readme-gen")).toBe(false);
+    expect(isScaffoldName("awt-dashboard")).toBe(false);
+    expect(isScaffoldName("immersivekit")).toBe(false);
+  });
+
+  it("returns true for empty or whitespace-only names", () => {
+    expect(isScaffoldName("")).toBe(true);
+    expect(isScaffoldName("   ")).toBe(true);
+  });
+
+  it("SCAFFOLD_NAMES set is exported and contains expected entries", () => {
+    expect(SCAFFOLD_NAMES.has("vite-react-typescript-starter")).toBe(true);
+    expect(SCAFFOLD_NAMES.has("my-app")).toBe(true);
+    expect(SCAFFOLD_NAMES.size).toBeGreaterThan(5);
+  });
+});
+
+// ─── buildContext ─────────────────────────────────────────────────────────
 
 describe("buildContext", () => {
   it("includes project name and file count", () => {
@@ -31,6 +72,120 @@ describe("buildContext", () => {
     expect(ctx).toContain("dev: vite");
   });
 
+  it("uses projectNameOverride when provided", () => {
+    const ctx = buildContext({
+      projectName: "vite-react-typescript-starter",
+      fileCount: 10,
+      stack: [],
+      dependencies: {},
+      scripts: {},
+      envVars: [],
+      deployment: [],
+      topExtensions: [],
+      configFiles: {},
+      existingReadme: "",
+      tree: "",
+      projectNameOverride: "PuzzleFlow AI",
+    });
+
+    expect(ctx).toContain("PuzzleFlow AI");
+    expect(ctx).not.toContain("vite-react-typescript-starter");
+  });
+
+  it("falls back to projectName when override is empty string", () => {
+    const ctx = buildContext({
+      projectName: "real-project-name",
+      fileCount: 5,
+      stack: [],
+      dependencies: {},
+      scripts: {},
+      envVars: [],
+      deployment: [],
+      topExtensions: [],
+      configFiles: {},
+      existingReadme: "",
+      tree: "",
+      projectNameOverride: "",
+    });
+
+    expect(ctx).toContain("real-project-name");
+  });
+
+  it("falls back to projectName when override is whitespace only", () => {
+    const ctx = buildContext({
+      projectName: "real-project-name",
+      fileCount: 5,
+      stack: [],
+      dependencies: {},
+      scripts: {},
+      envVars: [],
+      deployment: [],
+      topExtensions: [],
+      configFiles: {},
+      existingReadme: "",
+      tree: "",
+      projectNameOverride: "   ",
+    });
+
+    expect(ctx).toContain("real-project-name");
+  });
+
+  it("includes existing README excerpt when present", () => {
+    const ctx = buildContext({
+      projectName: "test",
+      fileCount: 1,
+      stack: [],
+      dependencies: {},
+      scripts: {},
+      envVars: [],
+      deployment: [],
+      topExtensions: [],
+      configFiles: {},
+      existingReadme: "# My Old README\nSome content here.",
+      tree: "",
+    });
+
+    expect(ctx).toContain("My Old README");
+    expect(ctx).toContain("EXISTING README");
+  });
+
+  it("omits existing README section when empty", () => {
+    const ctx = buildContext({
+      projectName: "test",
+      fileCount: 1,
+      stack: [],
+      dependencies: {},
+      scripts: {},
+      envVars: [],
+      deployment: [],
+      topExtensions: [],
+      configFiles: {},
+      existingReadme: "",
+      tree: "",
+    });
+
+    expect(ctx).not.toContain("EXISTING README");
+  });
+
+  it("includes config file content in context", () => {
+    const ctx = buildContext({
+      projectName: "test",
+      fileCount: 1,
+      stack: [],
+      dependencies: {},
+      scripts: {},
+      envVars: [],
+      deployment: [],
+      topExtensions: [],
+      configFiles: { "netlify.toml": "[build]\n  command = \"npm run build\"" },
+      existingReadme: "",
+      tree: "",
+    });
+
+    expect(ctx).toContain("netlify.toml");
+    expect(ctx).toContain("npm run build");
+  });
+
   it("handles empty analysis gracefully", () => {
     const ctx = buildContext({
       projectName: "Project",
@@ -51,10 +206,9 @@ describe("buildContext", () => {
     expect(typeof ctx).toBe("string");
   });
 
-  it("truncates large config files", () => {
-    const bigContent = "x".repeat(10000);
+  it("labels PROJECT NAME without the (guess) suffix when override is used", () => {
     const ctx = buildContext({
-      projectName: "test",
+      projectName: "fallback",
       fileCount: 1,
       stack: [],
       dependencies: {},
@@ -62,16 +216,17 @@ describe("buildContext", () => {
       envVars: [],
       deployment: [],
       topExtensions: [],
-      configFiles: { "package.json": bigContent },
+      configFiles: {},
       existingReadme: "",
       tree: "",
+      projectNameOverride: "Real Name",
     });
-    // Context should exist and include the file reference
-    expect(ctx).toContain("package.json");
+
+    expect(ctx).toContain("PROJECT NAME: Real Name");
   });
 });
 
-// ─── GitHub URL parser tests ──────────────────────────────────────────────
+// ─── GitHub URL parser ────────────────────────────────────────────────────
 
 describe("parseGithubRepo", () => {
   it("parses a full HTTPS GitHub URL", () => {
@@ -102,9 +257,21 @@ describe("parseGithubRepo", () => {
     expect(() => parseGithubRepo("not-a-url")).toThrow();
     expect(() => parseGithubRepo("")).toThrow();
   });
+
+  it("handles URLs with http (not https)", () => {
+    const result = parseGithubRepo("http://github.com/owner/repo");
+    expect(result.owner).toBe("owner");
+    expect(result.repo).toBe("repo");
+  });
+
+  it("handles URLs with www prefix", () => {
+    const result = parseGithubRepo("https://www.github.com/owner/repo");
+    expect(result.owner).toBe("owner");
+    expect(result.repo).toBe("repo");
+  });
 });
 
-// ─── LLM Generator tests ─────────────────────────────────────────────────
+// ─── MJW Banner ───────────────────────────────────────────────────────────
 
 describe("MJW_BANNER", () => {
   it("contains centered alignment", () => {
@@ -117,5 +284,60 @@ describe("MJW_BANNER", () => {
 
   it("ends with double newline for proper markdown separation", () => {
     expect(MJW_BANNER.endsWith("\n\n")).toBe(true);
+  });
+
+  it("contains a valid image tag", () => {
+    expect(MJW_BANNER).toContain("![MJW Design]");
+  });
+
+  it("contains a hyperlink to mjwdesign.ca", () => {
+    expect(MJW_BANNER).toContain("mjwdesign.ca");
+  });
+});
+
+// ─── buildSystemPrompt ────────────────────────────────────────────────────
+
+describe("buildSystemPrompt", () => {
+  it("returns default prompt when no reference is provided", () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain("expert technical writer");
+    expect(prompt).toContain("README.md");
+    expect(prompt).toContain("Tech stack");
+  });
+
+  it("returns default prompt when reference is empty string", () => {
+    const prompt = buildSystemPrompt("");
+    expect(prompt).toContain("expert technical writer");
+    expect(prompt).not.toContain("REFERENCE README");
+  });
+
+  it("returns default prompt when reference is whitespace only", () => {
+    const prompt = buildSystemPrompt("   ");
+    expect(prompt).not.toContain("REFERENCE README");
+  });
+
+  it("injects reference README into prompt when provided", () => {
+    const ref = "# My Reference README\nThis is the style to follow.";
+    const prompt = buildSystemPrompt(ref);
+    expect(prompt).toContain("REFERENCE README");
+    expect(prompt).toContain("My Reference README");
+    expect(prompt).toContain("style to emulate");
+  });
+
+  it("truncates very long reference READMEs to 12000 chars", () => {
+    const longRef = "x".repeat(20000);
+    const prompt = buildSystemPrompt(longRef);
+    // The injected reference should be capped; total prompt should not grow unbounded
+    expect(prompt.length).toBeLessThan(15000);
+  });
+
+  it("instructs model to output only raw markdown", () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain("Output ONLY the raw markdown");
+  });
+
+  it("reference prompt instructs model not to copy source facts", () => {
+    const prompt = buildSystemPrompt("# Reference");
+    expect(prompt).toContain("Do NOT copy the reference");
   });
 });

@@ -36,6 +36,7 @@ const readmeRouter = router({
         referenceReadme: z.string().optional(),
         templateName: z.string().optional(),
         includeBanner: z.boolean().default(true),
+        projectNameOverride: z.string().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -50,6 +51,9 @@ const readmeRouter = router({
 
       // Parse the ZIP
       const analysis = await analyzeZip(buffer);
+      if (input.projectNameOverride?.trim()) {
+        analysis.projectNameOverride = input.projectNameOverride.trim();
+      }
       const context = buildContext(analysis);
 
       // Generate README via LLM
@@ -64,10 +68,13 @@ const readmeRouter = router({
       const models = await getAvailableModels();
       const modelLabel = models.find((m) => m.id === input.modelId)?.label || input.modelId || "AI";
 
+      // Use override name for DB record and response if provided
+      const savedProjectName = analysis.projectNameOverride?.trim() || analysis.projectName;
+
       // Save to DB
       const id = await saveGeneration({
         userId: ctx.user.id,
-        projectName: analysis.projectName,
+        projectName: savedProjectName,
         stack: analysis.stack,
         dependenciesCount: Object.keys(analysis.dependencies).length,
         scripts: Object.keys(analysis.scripts),
@@ -86,7 +93,7 @@ const readmeRouter = router({
 
       return {
         id,
-        projectName: analysis.projectName,
+        projectName: savedProjectName,
         stack: analysis.stack,
         dependenciesCount: Object.keys(analysis.dependencies).length,
         scripts: Object.keys(analysis.scripts),
@@ -113,14 +120,20 @@ const readmeRouter = router({
         referenceReadme: z.string().optional(),
         templateName: z.string().optional(),
         includeBanner: z.boolean().default(true),
+        projectNameOverride: z.string().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const { buffer, repoName } = await fetchRepoZip(input.url);
 
       const analysis = await analyzeZip(buffer);
+      // Fall back to the repo slug if auto-detection returned a generic name
       if (!analysis.projectName || analysis.projectName === "Project") {
         analysis.projectName = repoName;
+      }
+      // Apply manual override last so it always wins
+      if (input.projectNameOverride?.trim()) {
+        analysis.projectNameOverride = input.projectNameOverride.trim();
       }
       const context = buildContext(analysis);
 
@@ -134,9 +147,12 @@ const readmeRouter = router({
       const models = await getAvailableModels();
       const modelLabel = models.find((m) => m.id === input.modelId)?.label || input.modelId || "AI";
 
+      // Use override name for DB record and response if provided
+      const savedProjectName = analysis.projectNameOverride?.trim() || analysis.projectName;
+
       const id = await saveGeneration({
         userId: ctx.user.id,
-        projectName: analysis.projectName,
+        projectName: savedProjectName,
         stack: analysis.stack,
         dependenciesCount: Object.keys(analysis.dependencies).length,
         scripts: Object.keys(analysis.scripts),
@@ -155,7 +171,7 @@ const readmeRouter = router({
 
       return {
         id,
-        projectName: analysis.projectName,
+        projectName: savedProjectName,
         stack: analysis.stack,
         dependenciesCount: Object.keys(analysis.dependencies).length,
         scripts: Object.keys(analysis.scripts),
