@@ -28,7 +28,7 @@ export interface GenerationResult {
   model: string;
   modelLabel?: string;
   templateName?: string;
-  hasReference?: number;
+  hasReference?: boolean;
   createdAt: string;
 }
 

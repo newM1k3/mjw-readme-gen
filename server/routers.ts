@@ -106,7 +106,7 @@ const readmeRouter = router({
         model: input.modelId || "default",
         modelLabel,
         templateName: input.templateName || "",
-        hasReference: input.referenceReadme ? 1 : 0,
+        hasReference: input.referenceReadme ? true : false,
         createdAt: new Date().toISOString(),
       };
     }),
@@ -184,7 +184,7 @@ const readmeRouter = router({
         model: input.modelId || "default",
         modelLabel,
         templateName: input.templateName || "",
-        hasReference: input.referenceReadme ? 1 : 0,
+        hasReference: input.referenceReadme ? true : false,
         createdAt: new Date().toISOString(),
       };
     }),
@@ -249,7 +249,7 @@ const readmeRouter = router({
         model: input.modelId || src.model,
         modelLabel,
         templateName: input.templateName || "",
-        hasReference: input.referenceReadme ? 1 : 0,
+        hasReference: input.referenceReadme ? true : false,
         createdAt: new Date().toISOString(),
       };
     }),

@@ -197,7 +197,7 @@ export default function GeneratorPage() {
           : String(historyItemQuery.data.createdAt),
         modelLabel: historyItemQuery.data.modelLabel || undefined,
         templateName: historyItemQuery.data.templateName || undefined,
-        hasReference: historyItemQuery.data.hasReference ? 1 : 0,
+        hasReference: Boolean(historyItemQuery.data.hasReference),
       });
     }
   }, [historyItemQuery.data]);
