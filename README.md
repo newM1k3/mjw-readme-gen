@@ -114,7 +114,7 @@ All variables are server-side unless prefixed with `VITE_`. The app will not sta
 
 | Variable | Required | Scope | Description |
 | :---- | :---- | :---- | :---- |
-| `DATABASE_URL` | **Required** | Server | MySQL connection string. Example: `mysql://user:password@host:3306/mjw_readme_gen` |
+| `DATABASE_URL` | **Required** | Server | MySQL connection string. |
 | `JWT_SECRET` | **Required** | Server | Long random string used to sign session JWT cookies. |
 | `GITHUB_CLIENT_ID` | **Required** | Server | Client ID from your GitHub OAuth App. |
 | `GITHUB_CLIENT_SECRET` | **Required** | Server | Client secret from your GitHub OAuth App. Never expose this in frontend code. |
