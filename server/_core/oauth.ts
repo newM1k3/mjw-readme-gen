@@ -61,10 +61,16 @@ export function registerOAuthRoutes(app: Express) {
     } catch (error) {
       console.error("[OAuth] Callback failed", error);
       // Surfaced directly in the response (not just server logs) since Netlify
-      // function logs are otherwise a multi-click detour during setup.
+      // function logs are otherwise a multi-click detour during setup. mysql2
+      // puts the actual driver error (code, errno, sqlMessage) on `.cause`,
+      // which Drizzle's "Failed query" wrapper otherwise hides.
+      const cause = error instanceof Error ? (error.cause as any) : undefined;
       res.status(500).json({
         error: "OAuth callback failed",
         detail: error instanceof Error ? error.message : String(error),
+        cause: cause
+          ? { code: cause.code, errno: cause.errno, sqlMessage: cause.sqlMessage, message: cause.message }
+          : undefined,
       });
     }
   });
