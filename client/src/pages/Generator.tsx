@@ -79,7 +79,7 @@ function HistoryRow({
 }: {
   item: any;
   isSelected: boolean;
-  compareIds: number[];
+  compareIds: string[];
   onLoad: () => void;
   onDelete: () => void;
   onRerun: () => void;
@@ -154,8 +154,8 @@ export default function GeneratorPage() {
   const { streamingText, isStreaming, startZip, startUrl, startRerun, abort } = useStreamGenerate();
 
   // History & compare
-  const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
-  const [compareIds, setCompareIds] = useState<number[]>([]);
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [compareIds, setCompareIds] = useState<string[]>([]);
   const [compareItems, setCompareItems] = useState<{ a: GenerationResult; b: GenerationResult } | null>(null);
 
   // tRPC queries & mutations
@@ -192,10 +192,12 @@ export default function GeneratorPage() {
         scripts: historyItemQuery.data.scripts as string[],
         envVars: historyItemQuery.data.envVars as string[],
         deployment: historyItemQuery.data.deployment as string[],
-        createdAt: historyItemQuery.data.createdAt.toISOString(),
+        createdAt: historyItemQuery.data.createdAt instanceof Date
+          ? historyItemQuery.data.createdAt.toISOString()
+          : String(historyItemQuery.data.createdAt),
         modelLabel: historyItemQuery.data.modelLabel || undefined,
         templateName: historyItemQuery.data.templateName || undefined,
-        hasReference: historyItemQuery.data.hasReference || 0,
+        hasReference: historyItemQuery.data.hasReference ? 1 : 0,
       });
     }
   }, [historyItemQuery.data]);
@@ -269,7 +271,7 @@ export default function GeneratorPage() {
     setIsAnalyzing(false);
   };
 
-  const handleRerun = async (id: number) => {
+  const handleRerun = async (id: string) => {
     if (!isAuthenticated) return;
     setIsAnalyzing(true);
     setCurrentResult(null);
@@ -293,14 +295,14 @@ export default function GeneratorPage() {
     toast.info("Generation cancelled");
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string) => {
     await deleteGen.mutateAsync({ id });
     if (selectedHistoryId === id) { setCurrentResult(null); setSelectedHistoryId(null); }
     refetchHistory();
     toast.success("Deleted");
   };
 
-  const handleToggleCompare = (id: number) => {
+  const handleToggleCompare = (id: string) => {
     setCompareIds((prev) => {
       if (prev.includes(id)) return prev.filter((x) => x !== id);
       if (prev.length >= 2) return prev;
@@ -313,9 +315,10 @@ export default function GeneratorPage() {
     const [a, b] = compareIds;
     const aItem = await utils.readme.historyItem.fetch({ id: a });
     const bItem = await utils.readme.historyItem.fetch({ id: b });
+    const toIso = (d: Date | string) => d instanceof Date ? d.toISOString() : String(d);
     setCompareItems({
-      a: { ...aItem, stack: aItem.stack as string[], scripts: aItem.scripts as string[], envVars: aItem.envVars as string[], deployment: aItem.deployment as string[], createdAt: aItem.createdAt.toISOString() },
-      b: { ...bItem, stack: bItem.stack as string[], scripts: bItem.scripts as string[], envVars: bItem.envVars as string[], deployment: bItem.deployment as string[], createdAt: bItem.createdAt.toISOString() },
+      a: { ...aItem, stack: aItem.stack as string[], scripts: aItem.scripts as string[], envVars: aItem.envVars as string[], deployment: aItem.deployment as string[], createdAt: toIso(aItem.createdAt) },
+      b: { ...bItem, stack: bItem.stack as string[], scripts: bItem.scripts as string[], envVars: bItem.envVars as string[], deployment: bItem.deployment as string[], createdAt: toIso(bItem.createdAt) },
     });
   };
 
@@ -329,9 +332,9 @@ export default function GeneratorPage() {
     toast.success("Template saved");
   };
 
-  const handleDeleteTemplate = async (id: number) => {
+  const handleDeleteTemplate = async (id: string) => {
     await deleteTemplate.mutateAsync({ id });
-    if (String(id) === selectedTemplate) setSelectedTemplate("");
+    if (id === selectedTemplate) setSelectedTemplate("");
     refetchTemplates();
     toast.success("Template deleted");
   };
@@ -491,7 +494,7 @@ export default function GeneratorPage() {
                   </select>
                   {selectedTemplate && (
                     <button
-                      onClick={() => handleDeleteTemplate(Number(selectedTemplate))}
+                      onClick={() => handleDeleteTemplate(selectedTemplate)}
                       className="mt-1 flex items-center gap-1 text-[10px] font-mono text-muted-foreground hover:text-destructive"
                     >
                       <Trash2 className="w-2.5 h-2.5" />Delete template

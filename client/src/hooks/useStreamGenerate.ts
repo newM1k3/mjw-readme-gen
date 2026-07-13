@@ -14,7 +14,7 @@ import { useCallback, useState } from "react";
 import { trpc } from "@/lib/trpc";
 
 export interface GenerationResult {
-  id: number;
+  id: string;
   projectName: string;
   stack: string[];
   scripts: string[];
@@ -52,7 +52,7 @@ interface UrlParams {
 }
 
 interface RerunParams {
-  id: number;
+  id: string;
   modelId?: string;
   referenceReadme?: string;
   includeBanner?: boolean;

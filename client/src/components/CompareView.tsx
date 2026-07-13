@@ -8,7 +8,7 @@ import { Copy, Download, X, GitCompare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface HistoryItem {
-  id: number;
+  id: string;
   projectName: string;
   model: string;
   modelLabel?: string;

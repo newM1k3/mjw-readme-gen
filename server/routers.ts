@@ -87,7 +87,7 @@ const readmeRouter = router({
         model: input.modelId || "default",
         modelLabel,
         templateName: input.templateName || "",
-        hasReference: input.referenceReadme ? 1 : 0,
+        hasReference: input.referenceReadme ? true : false,
         context,
       });
 
@@ -165,7 +165,7 @@ const readmeRouter = router({
         model: input.modelId || "default",
         modelLabel,
         templateName: input.templateName || "",
-        hasReference: input.referenceReadme ? 1 : 0,
+        hasReference: input.referenceReadme ? true : false,
         context,
       });
 
@@ -193,7 +193,7 @@ const readmeRouter = router({
   rerun: protectedProcedure
     .input(
       z.object({
-        id: z.number(),
+        id: z.string(),
         modelId: z.string().optional(),
         referenceReadme: z.string().optional(),
         templateName: z.string().optional(),
@@ -230,7 +230,7 @@ const readmeRouter = router({
         model: input.modelId || src.model,
         modelLabel,
         templateName: input.templateName || "",
-        hasReference: input.referenceReadme ? 1 : 0,
+        hasReference: input.referenceReadme ? true : false,
         context: src.context,
       });
 
@@ -261,7 +261,7 @@ const readmeRouter = router({
 
   // Get single history item
   historyItem: protectedProcedure
-    .input(z.object({ id: z.number() }))
+    .input(z.object({ id: z.string() }))
     .query(async ({ ctx, input }) => {
       const item = await getGenerationById(input.id, ctx.user.id);
       if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "Generation not found." });
@@ -270,7 +270,7 @@ const readmeRouter = router({
 
   // Delete a generation
   deleteGeneration: protectedProcedure
-    .input(z.object({ id: z.number() }))
+    .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       await deleteGeneration(input.id, ctx.user.id);
       return { deleted: true };
@@ -302,7 +302,7 @@ const templatesRouter = router({
     }),
 
   delete: protectedProcedure
-    .input(z.object({ id: z.number() }))
+    .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       await deleteTemplate(input.id, ctx.user.id);
       return { deleted: true };

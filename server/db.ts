@@ -1,144 +1,294 @@
-import { desc, eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, readmeGenerations, readmeTemplates, users } from "../drizzle/schema";
-import type { InsertReadmeGeneration, InsertReadmeTemplate } from "../drizzle/schema";
+/**
+ * server/db.ts
+ *
+ * Data-access layer — PocketBase edition.
+ *
+ * The server authenticates to PocketBase as a superuser on startup so it can
+ * read/write across all users' records.  The browser never calls PocketBase
+ * directly; all access goes through the existing tRPC API.
+ *
+ * Collections (all rules null = superuser-only):
+ *   readme_users        — one record per GitHub login
+ *   readme_generations  — one record per generated README
+ *   readme_templates    — user-saved style references
+ */
+
+import PocketBase from "pocketbase";
 import { ENV } from "./_core/env";
 
-let _db: ReturnType<typeof drizzle> | null = null;
+// ─── Canonical User type ────────────────────────────────────────────────────
 
-export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      _db = drizzle(process.env.DATABASE_URL);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
+export type User = {
+  id: string;
+  openId: string;
+  name: string | null;
+  email: string | null;
+  loginMethod: string | null;
+  role: "user" | "admin";
+  lastSignedIn: string;
+};
+
+// ─── PocketBase client (singleton) ─────────────────────────────────────────
+
+let _pb: PocketBase | null = null;
+
+async function getPb(): Promise<PocketBase> {
+  if (_pb && _pb.authStore.isValid) return _pb;
+
+  const url = ENV.pocketbaseUrl;
+  if (!url) throw new Error("POCKETBASE_URL is not set");
+
+  _pb = new PocketBase(url);
+
+  // Authenticate as superuser using email+password
+  const adminEmail = ENV.pocketbaseAdminEmail;
+  const adminPassword = ENV.pocketbaseAdminPassword;
+
+  if (!adminEmail || !adminPassword) {
+    throw new Error("POCKETBASE_ADMIN_EMAIL / POCKETBASE_ADMIN_PASSWORD are not set");
+  }
+
+  await _pb.collection("_superusers").authWithPassword(adminEmail, adminPassword);
+  return _pb;
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** Map a raw PocketBase record to the canonical User shape. */
+function toUser(record: any): User {
+  return {
+    id: record.id as string,
+    openId: record.openId as string,
+    name: (record.name as string) || null,
+    email: (record.email as string) || null,
+    loginMethod: (record.loginMethod as string) || null,
+    role: (record.role as "user" | "admin") || "user",
+    lastSignedIn: record.lastSignedIn as string,
+  };
+}
+
+// ─── Users ──────────────────────────────────────────────────────────────────
+
+export async function upsertUser(user: {
+  openId: string;
+  name?: string | null;
+  email?: string | null;
+  loginMethod?: string | null;
+  role?: "user" | "admin";
+  lastSignedIn?: Date | string;
+}): Promise<void> {
+  if (!user.openId) throw new Error("User openId is required for upsert");
+
+  const pb = await getPb();
+
+  // Determine role: admin if ownerOpenId matches
+  const role =
+    user.role !== undefined
+      ? user.role
+      : user.openId === ENV.ownerOpenId
+      ? "admin"
+      : undefined;
+
+  const lastSignedIn =
+    user.lastSignedIn instanceof Date
+      ? user.lastSignedIn.toISOString()
+      : user.lastSignedIn ?? new Date().toISOString();
+
+  try {
+    // Try to find existing record
+    const existing = await pb
+      .collection("readme_users")
+      .getFirstListItem(`openId = "${user.openId}"`);
+
+    // Build update payload — only include fields that were provided
+    const updateData: Record<string, unknown> = { lastSignedIn };
+    if (user.name !== undefined) updateData.name = user.name ?? "";
+    if (user.email !== undefined) updateData.email = user.email ?? "";
+    if (user.loginMethod !== undefined) updateData.loginMethod = user.loginMethod ?? "";
+    if (role !== undefined) updateData.role = role;
+
+    await pb.collection("readme_users").update(existing.id, updateData);
+  } catch (err: any) {
+    // 404 means not found — create a new record
+    if (err?.status === 404 || err?.response?.code === 404) {
+      const createData: Record<string, unknown> = {
+        openId: user.openId,
+        name: user.name ?? "",
+        email: user.email ?? "",
+        loginMethod: user.loginMethod ?? "",
+        role: role ?? "user",
+        lastSignedIn,
+      };
+      await pb.collection("readme_users").create(createData);
+    } else {
+      throw err;
     }
   }
-  return _db;
 }
 
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) throw new Error("User openId is required for upsert");
-  const db = await getDb();
-  if (!db) return;
-
-  const values: InsertUser = { openId: user.openId };
-  const updateSet: Record<string, unknown> = {};
-
-  const textFields = ["name", "email", "loginMethod"] as const;
-  for (const field of textFields) {
-    const value = user[field];
-    if (value === undefined) continue;
-    const normalized = value ?? null;
-    values[field] = normalized;
-    updateSet[field] = normalized;
+export async function getUserByOpenId(openId: string): Promise<User | null> {
+  const pb = await getPb();
+  try {
+    const record = await pb
+      .collection("readme_users")
+      .getFirstListItem(`openId = "${openId}"`);
+    return toUser(record);
+  } catch (err: any) {
+    if (err?.status === 404 || err?.response?.code === 404) return null;
+    throw err;
   }
+}
 
-  if (user.lastSignedIn !== undefined) {
-    values.lastSignedIn = user.lastSignedIn;
-    updateSet.lastSignedIn = user.lastSignedIn;
+// ─── README Generations ─────────────────────────────────────────────────────
+
+export type InsertReadmeGeneration = {
+  userId: string;
+  projectName?: string;
+  stack?: string[];
+  dependenciesCount?: number;
+  scripts?: string[];
+  envVars?: string[];
+  deployment?: string[];
+  fileCount?: number;
+  readme: string;
+  source?: "zip" | "github" | string;
+  sourceLabel?: string;
+  model?: string;
+  modelLabel?: string;
+  templateName?: string;
+  hasReference?: boolean | number;
+  context?: string | null;
+};
+
+export async function saveGeneration(data: InsertReadmeGeneration): Promise<string> {
+  const pb = await getPb();
+  const record = await pb.collection("readme_generations").create({
+    user: data.userId,
+    projectName: data.projectName ?? "",
+    stack: data.stack ?? [],
+    dependenciesCount: data.dependenciesCount ?? 0,
+    scripts: data.scripts ?? [],
+    envVars: data.envVars ?? [],
+    deployment: data.deployment ?? [],
+    fileCount: data.fileCount ?? 0,
+    readme: data.readme,
+    source: data.source ?? "zip",
+    sourceLabel: data.sourceLabel ?? "",
+    model: data.model ?? "claude-sonnet-5",
+    modelLabel: data.modelLabel ?? "",
+    templateName: data.templateName ?? "",
+    hasReference: Boolean(data.hasReference),
+    context: data.context ?? "",
+  });
+  return record.id as string;
+}
+
+export async function getGenerationsByUser(userId: string) {
+  const pb = await getPb();
+  const result = await pb.collection("readme_generations").getList(1, 100, {
+    filter: `user = "${userId}"`,
+    sort: "-created",
+    fields: "id,projectName,stack,source,model,modelLabel,templateName,hasReference,created",
+  });
+  return result.items.map((r) => ({
+    id: r.id as string,
+    projectName: r.projectName as string,
+    stack: r.stack as string[],
+    source: r.source as string,
+    model: r.model as string,
+    modelLabel: r.modelLabel as string,
+    templateName: r.templateName as string,
+    hasReference: r.hasReference as boolean,
+    // Expose as `createdAt` to match the shape callers expect
+    createdAt: new Date(r.created as string),
+  }));
+}
+
+export async function getGenerationById(id: string, userId: string) {
+  const pb = await getPb();
+  try {
+    const record = await pb.collection("readme_generations").getOne(id);
+    // Ownership check
+    if ((record.user as string) !== userId) return null;
+    return {
+      id: record.id as string,
+      user: record.user as string,
+      projectName: record.projectName as string,
+      stack: record.stack as string[],
+      dependenciesCount: record.dependenciesCount as number,
+      scripts: record.scripts as string[],
+      envVars: record.envVars as string[],
+      deployment: record.deployment as string[],
+      fileCount: record.fileCount as number,
+      readme: record.readme as string,
+      source: record.source as string,
+      sourceLabel: record.sourceLabel as string,
+      model: record.model as string,
+      modelLabel: record.modelLabel as string,
+      templateName: record.templateName as string,
+      hasReference: record.hasReference as boolean,
+      context: record.context as string | null,
+      createdAt: new Date(record.created as string),
+      updatedAt: new Date(record.updated as string),
+    };
+  } catch (err: any) {
+    if (err?.status === 404 || err?.response?.code === 404) return null;
+    throw err;
   }
-  if (user.role !== undefined) {
-    values.role = user.role;
-    updateSet.role = user.role;
-  } else if (user.openId === ENV.ownerOpenId) {
-    values.role = "admin";
-    updateSet.role = "admin";
+}
+
+export async function deleteGeneration(id: string, userId: string): Promise<void> {
+  const pb = await getPb();
+  // Fetch-then-check for ownership (PocketBase has no atomic filter-delete)
+  const record = await pb.collection("readme_generations").getOne(id);
+  if ((record.user as string) !== userId) {
+    throw new Error("Forbidden: you do not own this generation");
   }
-
-  if (!values.lastSignedIn) values.lastSignedIn = new Date();
-  if (Object.keys(updateSet).length === 0) updateSet.lastSignedIn = new Date();
-
-  await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
+  await pb.collection("readme_generations").delete(id);
 }
 
-export async function getUserByOpenId(openId: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-  return result.length > 0 ? result[0] : undefined;
+// ─── README Templates ────────────────────────────────────────────────────────
+
+export type InsertReadmeTemplate = {
+  userId: string;
+  name: string;
+  content: string;
+  charCount?: number;
+};
+
+export async function saveTemplate(data: InsertReadmeTemplate): Promise<string> {
+  const pb = await getPb();
+  const record = await pb.collection("readme_templates").create({
+    user: data.userId,
+    name: data.name,
+    content: data.content,
+    charCount: data.charCount ?? 0,
+  });
+  return record.id as string;
 }
 
-// ─── README Generations ────────────────────────────────────────────────────
-
-export async function saveGeneration(data: InsertReadmeGeneration) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  const result = await db.insert(readmeGenerations).values(data);
-  const insertId = (result as any)[0]?.insertId;
-  return insertId as number;
+export async function getTemplatesByUser(userId: string) {
+  const pb = await getPb();
+  const result = await pb.collection("readme_templates").getList(1, 200, {
+    filter: `user = "${userId}"`,
+    sort: "-created",
+  });
+  return result.items.map((r) => ({
+    id: r.id as string,
+    user: r.user as string,
+    name: r.name as string,
+    content: r.content as string,
+    charCount: r.charCount as number,
+    createdAt: new Date(r.created as string),
+    updatedAt: new Date(r.updated as string),
+  }));
 }
 
-export async function getGenerationsByUser(userId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db
-    .select({
-      id: readmeGenerations.id,
-      projectName: readmeGenerations.projectName,
-      stack: readmeGenerations.stack,
-      source: readmeGenerations.source,
-      model: readmeGenerations.model,
-      modelLabel: readmeGenerations.modelLabel,
-      templateName: readmeGenerations.templateName,
-      hasReference: readmeGenerations.hasReference,
-      createdAt: readmeGenerations.createdAt,
-    })
-    .from(readmeGenerations)
-    .where(eq(readmeGenerations.userId, userId))
-    .orderBy(desc(readmeGenerations.createdAt))
-    .limit(100);
-}
-
-export async function getGenerationById(id: number, userId: number) {
-  const db = await getDb();
-  if (!db) return null;
-  const result = await db
-    .select()
-    .from(readmeGenerations)
-    .where(eq(readmeGenerations.id, id))
-    .limit(1);
-  const row = result[0];
-  if (!row || row.userId !== userId) return null;
-  return row;
-}
-
-export async function deleteGeneration(id: number, userId: number) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  const { and } = await import("drizzle-orm");
-  await db
-    .delete(readmeGenerations)
-    .where(and(eq(readmeGenerations.id, id), eq(readmeGenerations.userId, userId)));
-}
-
-// ─── README Templates ──────────────────────────────────────────────────────
-
-export async function saveTemplate(data: InsertReadmeTemplate) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  const result = await db.insert(readmeTemplates).values(data);
-  const insertId = (result as any)[0]?.insertId;
-  return insertId as number;
-}
-
-export async function getTemplatesByUser(userId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db
-    .select()
-    .from(readmeTemplates)
-    .where(eq(readmeTemplates.userId, userId))
-    .orderBy(desc(readmeTemplates.createdAt))
-    .limit(200);
-}
-
-export async function deleteTemplate(id: number, userId: number) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  const { and } = await import("drizzle-orm");
-  await db
-    .delete(readmeTemplates)
-    .where(and(eq(readmeTemplates.id, id), eq(readmeTemplates.userId, userId)));
+export async function deleteTemplate(id: string, userId: string): Promise<void> {
+  const pb = await getPb();
+  const record = await pb.collection("readme_templates").getOne(id);
+  if ((record.user as string) !== userId) {
+    throw new Error("Forbidden: you do not own this template");
+  }
+  await pb.collection("readme_templates").delete(id);
 }

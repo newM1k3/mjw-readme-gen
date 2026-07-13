@@ -1,1 +1,0 @@
-ALTER TABLE `readme_generations` MODIFY COLUMN `context` text;

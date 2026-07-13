@@ -1,6 +1,8 @@
 export const ENV = {
   cookieSecret: process.env.JWT_SECRET ?? "",
-  databaseUrl: process.env.DATABASE_URL ?? "",
+  pocketbaseUrl: process.env.POCKETBASE_URL ?? "",
+  pocketbaseAdminEmail: process.env.POCKETBASE_ADMIN_EMAIL ?? "",
+  pocketbaseAdminPassword: process.env.POCKETBASE_ADMIN_PASSWORD ?? "",
   ownerOpenId: process.env.OWNER_OPEN_ID ?? "",
   isProduction: process.env.NODE_ENV === "production",
 
