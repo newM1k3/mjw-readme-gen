@@ -39,6 +39,12 @@ async function getPb(): Promise<PocketBase> {
   if (!url) throw new Error("POCKETBASE_URL is not set");
 
   _pb = new PocketBase(url);
+  // The SDK's default auto-cancellation assumes one client per browser tab and
+  // cancels a request if another fires before it resolves. Here one client is
+  // shared across concurrent requests (tRPC batches multiple queries into a
+  // single HTTP call, e.g. readme.history + templates.list), which would
+  // otherwise cancel one of them and surface as a 500.
+  _pb.autoCancellation(false);
 
   // Authenticate as superuser using email+password
   const adminEmail = ENV.pocketbaseAdminEmail;
