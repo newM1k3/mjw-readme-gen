@@ -189,12 +189,36 @@ export async function saveGeneration(data: InsertReadmeGeneration): Promise<stri
   return record.id as string;
 }
 
+/**
+ * Creates a generation record before the README exists (`readme: ""`,
+ * `status: "pending"`). Used by the background-generation flow: the LLM call
+ * runs in a separate Netlify background function (up to 15 min budget)
+ * because README generation routinely exceeds a regular function's timeout,
+ * and the client polls this record via historyItem until it flips to
+ * "complete"/"failed".
+ */
+export async function createPendingGeneration(
+  data: Omit<InsertReadmeGeneration, "readme" | "status">
+): Promise<string> {
+  return saveGeneration({ ...data, readme: "", status: "pending" });
+}
+
+export async function completeGeneration(id: string, readme: string): Promise<void> {
+  const pb = await getPb();
+  await pb.collection("readme_generations").update(id, { readme, status: "complete" });
+}
+
+export async function failGeneration(id: string, errorMessage: string): Promise<void> {
+  const pb = await getPb();
+  await pb.collection("readme_generations").update(id, { status: "failed", errorMessage });
+}
+
 export async function getGenerationsByUser(userId: string) {
   const pb = await getPb();
   const result = await pb.collection("readme_generations").getList(1, 100, {
     filter: `user = "${userId}"`,
     sort: "-created",
-    fields: "id,projectName,stack,source,model,modelLabel,templateName,hasReference,created",
+    fields: "id,projectName,stack,source,model,modelLabel,templateName,hasReference,status,created",
   });
   return result.items.map((r) => ({
     id: r.id as string,
@@ -205,6 +229,7 @@ export async function getGenerationsByUser(userId: string) {
     modelLabel: r.modelLabel as string,
     templateName: r.templateName as string,
     hasReference: r.hasReference as boolean,
+    status: (r.status as "pending" | "complete" | "failed") || "complete",
     // Expose as `createdAt` to match the shape callers expect
     createdAt: new Date(r.created as string),
   }));

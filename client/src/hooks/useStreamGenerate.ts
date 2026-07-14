@@ -35,7 +35,7 @@ export interface GenerationResult {
   templateName?: string;
   hasReference?: boolean;
   status?: "pending" | "complete" | "failed";
-  errorMessage?: string;
+  errorMessage?: string | null;
   createdAt: string;
 }
 

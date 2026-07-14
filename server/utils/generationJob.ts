@@ -23,7 +23,7 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
     await completeGeneration(job.generationId, readme);
   } catch (err: any) {
     console.error("[GenerationJob] failed", err);
-    await failGeneration(job.generationId, err?.message || "Generation failed").catch((e) =>
+    await failGeneration(job.generationId, err?.message || "Generation failed").catch((e: unknown) =>
       console.error("[GenerationJob] failed to record failure", e)
     );
   }
