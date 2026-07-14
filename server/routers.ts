@@ -5,18 +5,19 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import {
+  createPendingGeneration,
   deleteGeneration,
   deleteTemplate,
   getGenerationById,
   getGenerationsByUser,
   getTemplatesByUser,
-  saveGeneration,
   saveTemplate,
 } from "./db";
 import { storagePut, storageGet } from "./storage";
 import { analyzeZip, buildContext } from "./utils/zipParser";
 import { fetchRepoZip } from "./utils/githubFetch";
-import { generateReadme, getAvailableModels } from "./utils/llmGenerator";
+import { getAvailableModels } from "./utils/llmGenerator";
+import { triggerGenerationJob } from "./_core/triggerGenerationJob";
 
 // ─── README Router ─────────────────────────────────────────────────────────
 
@@ -56,23 +57,16 @@ const readmeRouter = router({
       }
       const context = buildContext(analysis);
 
-      // Generate README via LLM
-      const readme = await generateReadme({
-        context,
-        modelId: input.modelId,
-        referenceReadme: input.referenceReadme,
-        includeBanner: input.includeBanner,
-      });
-
-      // Resolve model label
       const models = await getAvailableModels();
       const modelLabel = models.find((m) => m.id === input.modelId)?.label || input.modelId || "AI";
 
       // Use override name for DB record and response if provided
       const savedProjectName = analysis.projectNameOverride?.trim() || analysis.projectName;
 
-      // Save to DB
-      const id = await saveGeneration({
+      // Create the record as "pending" immediately, then hand the slow LLM
+      // call off to a background job (see triggerGenerationJob) — a regular
+      // request/function would otherwise time out before generation finishes.
+      const id = await createPendingGeneration({
         userId: ctx.user.id,
         projectName: savedProjectName,
         stack: analysis.stack,
@@ -81,7 +75,6 @@ const readmeRouter = router({
         envVars: analysis.envVars,
         deployment: analysis.deployment,
         fileCount: analysis.fileCount,
-        readme,
         source: "zip",
         sourceLabel: input.fileName,
         model: input.modelId || "default",
@@ -89,6 +82,14 @@ const readmeRouter = router({
         templateName: input.templateName || "",
         hasReference: input.referenceReadme ? true : false,
         context,
+      });
+
+      await triggerGenerationJob({
+        generationId: id,
+        context,
+        modelId: input.modelId,
+        referenceReadme: input.referenceReadme,
+        includeBanner: input.includeBanner,
       });
 
       return {
@@ -100,13 +101,14 @@ const readmeRouter = router({
         envVars: analysis.envVars,
         deployment: analysis.deployment,
         fileCount: analysis.fileCount,
-        readme,
+        readme: "",
         source: "zip" as const,
         sourceLabel: input.fileName,
         model: input.modelId || "default",
         modelLabel,
         templateName: input.templateName || "",
         hasReference: input.referenceReadme ? true : false,
+        status: "pending" as const,
         createdAt: new Date().toISOString(),
       };
     }),
@@ -137,20 +139,13 @@ const readmeRouter = router({
       }
       const context = buildContext(analysis);
 
-      const readme = await generateReadme({
-        context,
-        modelId: input.modelId,
-        referenceReadme: input.referenceReadme,
-        includeBanner: input.includeBanner,
-      });
-
       const models = await getAvailableModels();
       const modelLabel = models.find((m) => m.id === input.modelId)?.label || input.modelId || "AI";
 
       // Use override name for DB record and response if provided
       const savedProjectName = analysis.projectNameOverride?.trim() || analysis.projectName;
 
-      const id = await saveGeneration({
+      const id = await createPendingGeneration({
         userId: ctx.user.id,
         projectName: savedProjectName,
         stack: analysis.stack,
@@ -159,7 +154,6 @@ const readmeRouter = router({
         envVars: analysis.envVars,
         deployment: analysis.deployment,
         fileCount: analysis.fileCount,
-        readme,
         source: "github",
         sourceLabel: input.url,
         model: input.modelId || "default",
@@ -167,6 +161,14 @@ const readmeRouter = router({
         templateName: input.templateName || "",
         hasReference: input.referenceReadme ? true : false,
         context,
+      });
+
+      await triggerGenerationJob({
+        generationId: id,
+        context,
+        modelId: input.modelId,
+        referenceReadme: input.referenceReadme,
+        includeBanner: input.includeBanner,
       });
 
       return {
@@ -178,13 +180,14 @@ const readmeRouter = router({
         envVars: analysis.envVars,
         deployment: analysis.deployment,
         fileCount: analysis.fileCount,
-        readme,
+        readme: "",
         source: "github" as const,
         sourceLabel: input.url,
         model: input.modelId || "default",
         modelLabel,
         templateName: input.templateName || "",
         hasReference: input.referenceReadme ? true : false,
+        status: "pending" as const,
         createdAt: new Date().toISOString(),
       };
     }),
@@ -205,17 +208,10 @@ const readmeRouter = router({
       if (!src) throw new TRPCError({ code: "NOT_FOUND", message: "Generation not found." });
       if (!src.context) throw new TRPCError({ code: "BAD_REQUEST", message: "This generation cannot be re-run (no stored context)." });
 
-      const readme = await generateReadme({
-        context: src.context,
-        modelId: input.modelId,
-        referenceReadme: input.referenceReadme,
-        includeBanner: input.includeBanner,
-      });
-
       const models = await getAvailableModels();
       const modelLabel = models.find((m) => m.id === input.modelId)?.label || input.modelId || "AI";
 
-      const newId = await saveGeneration({
+      const newId = await createPendingGeneration({
         userId: ctx.user.id,
         projectName: src.projectName,
         stack: src.stack as string[],
@@ -224,7 +220,6 @@ const readmeRouter = router({
         envVars: src.envVars as string[],
         deployment: src.deployment as string[],
         fileCount: src.fileCount,
-        readme,
         source: src.source,
         sourceLabel: src.sourceLabel,
         model: input.modelId || src.model,
@@ -232,6 +227,14 @@ const readmeRouter = router({
         templateName: input.templateName || "",
         hasReference: input.referenceReadme ? true : false,
         context: src.context,
+      });
+
+      await triggerGenerationJob({
+        generationId: newId,
+        context: src.context,
+        modelId: input.modelId,
+        referenceReadme: input.referenceReadme,
+        includeBanner: input.includeBanner,
       });
 
       return {
@@ -243,13 +246,14 @@ const readmeRouter = router({
         envVars: src.envVars as string[],
         deployment: src.deployment as string[],
         fileCount: src.fileCount,
-        readme,
+        readme: "",
         source: src.source,
         sourceLabel: src.sourceLabel,
         model: input.modelId || src.model,
         modelLabel,
         templateName: input.templateName || "",
         hasReference: input.referenceReadme ? true : false,
+        status: "pending" as const,
         createdAt: new Date().toISOString(),
       };
     }),

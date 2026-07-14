@@ -1,17 +1,22 @@
 /**
  * useStreamGenerate
  *
- * Netlify Functions can't hold open SSE connections, so this calls the
- * existing non-streaming tRPC mutations (readme.generateZip / generateUrl /
- * rerun) instead of the old /api/readme/stream-* SSE routes. The external
- * interface (streamingText, isStreaming, startZip/startUrl/startRerun,
- * onToken/onDone/onError callbacks) is unchanged so callers don't need to
- * know the difference — `streamingText` just jumps straight to the full
- * README once the request resolves, rather than growing token by token.
+ * README generation runs as a Netlify background function (up to 15 min
+ * budget) instead of inline in the request — a regular function/serverless
+ * request routinely times out before Claude finishes a full README. The
+ * generateZip/generateUrl/rerun mutations return immediately with a
+ * "pending" record; this hook polls readme.historyItem until it flips to
+ * "complete"/"failed". The external interface (streamingText, isStreaming,
+ * startZip/startUrl/startRerun, onToken/onDone/onError callbacks) is
+ * unchanged from the old SSE-based version, so callers don't need to know
+ * the difference — `streamingText` just jumps straight to the full README
+ * once polling resolves, rather than growing token by token.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
+
+const POLL_INTERVAL_MS = 1500;
 
 export interface GenerationResult {
   id: string;
@@ -29,6 +34,8 @@ export interface GenerationResult {
   modelLabel?: string;
   templateName?: string;
   hasReference?: boolean;
+  status?: "pending" | "complete" | "failed";
+  errorMessage?: string;
   createdAt: string;
 }
 
@@ -64,17 +71,43 @@ type StreamCallbacks = {
   onError?: (message: string) => void;
 };
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export function useStreamGenerate() {
   const [streamingText, setStreamingText] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const cancelledRef = useRef(false);
 
   const generateZip = trpc.readme.generateZip.useMutation();
   const generateUrl = trpc.readme.generateUrl.useMutation();
   const rerun = trpc.readme.rerun.useMutation();
+  const utils = trpc.useUtils();
 
   const abort = useCallback(() => {
+    cancelledRef.current = true;
     setIsStreaming(false);
   }, []);
+
+  /** Polls readme.historyItem until the background job finishes. */
+  const pollUntilDone = useCallback(
+    async (id: string): Promise<GenerationResult> => {
+      for (;;) {
+        if (cancelledRef.current) throw new Error("Cancelled");
+
+        const item = await utils.client.readme.historyItem.query({ id });
+
+        if (item.status === "failed") {
+          throw new Error(item.errorMessage || "Generation failed");
+        }
+        if (item.status !== "pending") {
+          return item as unknown as GenerationResult;
+        }
+
+        await sleep(POLL_INTERVAL_MS);
+      }
+    },
+    [utils]
+  );
 
   const run = useCallback(
     async <TInput>(
@@ -82,20 +115,26 @@ export function useStreamGenerate() {
       input: TInput,
       callbacks: StreamCallbacks
     ) => {
+      cancelledRef.current = false;
       setStreamingText("");
       setIsStreaming(true);
       try {
-        const generation = await mutateAsync(input);
+        const initial = await mutateAsync(input);
+        const generation =
+          initial.status === "pending" ? await pollUntilDone(initial.id) : initial;
+
         setStreamingText(generation.readme);
         callbacks.onToken?.(generation.readme);
         callbacks.onDone?.(generation);
       } catch (err: any) {
-        callbacks.onError?.(err?.message || "Generation failed");
+        if (!cancelledRef.current) {
+          callbacks.onError?.(err?.message || "Generation failed");
+        }
       } finally {
         setIsStreaming(false);
       }
     },
-    []
+    [pollUntilDone]
   );
 
   const startZip = useCallback(

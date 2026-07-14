@@ -15,6 +15,11 @@ export const ENV = {
   // Anthropic (direct) — used for README generation
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
 
+  // Shared secret checked by the Netlify background function that runs the
+  // actual (slow) README generation — prevents randoms from invoking it
+  // directly and running up Anthropic usage on your key.
+  internalFunctionSecret: process.env.INTERNAL_FUNCTION_SECRET ?? "",
+
   // Optional S3-compatible storage for archiving uploaded zips.
   // Storage is best-effort: if unset, uploads simply aren't archived.
   s3Bucket: process.env.AWS_S3_BUCKET ?? "",
