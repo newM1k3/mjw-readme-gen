@@ -39,6 +39,12 @@ async function getPb(): Promise<PocketBase> {
   if (!url) throw new Error("POCKETBASE_URL is not set");
 
   _pb = new PocketBase(url);
+  // The SDK's default auto-cancellation assumes one client per browser tab and
+  // cancels a request if another fires before it resolves. Here one client is
+  // shared across concurrent requests (tRPC batches multiple queries into a
+  // single HTTP call, e.g. readme.history + templates.list), which would
+  // otherwise cancel one of them and surface as a 500.
+  _pb.autoCancellation(false);
 
   // Authenticate as superuser using email+password
   const adminEmail = ENV.pocketbaseAdminEmail;
@@ -166,27 +172,43 @@ export type InsertReadmeGeneration = {
 
 export async function saveGeneration(data: InsertReadmeGeneration): Promise<string> {
   const pb = await getPb();
-  const record = await pb.collection("readme_generations").create({
-    user: data.userId,
-    projectName: data.projectName ?? "",
-    stack: data.stack ?? [],
-    dependenciesCount: data.dependenciesCount ?? 0,
-    scripts: data.scripts ?? [],
-    envVars: data.envVars ?? [],
-    deployment: data.deployment ?? [],
-    fileCount: data.fileCount ?? 0,
-    readme: data.readme,
-    source: data.source ?? "zip",
-    sourceLabel: data.sourceLabel ?? "",
-    model: data.model ?? "claude-sonnet-5",
-    modelLabel: data.modelLabel ?? "",
-    templateName: data.templateName ?? "",
-    hasReference: Boolean(data.hasReference),
-    context: data.context ?? "",
-    status: data.status ?? "complete",
-    errorMessage: data.errorMessage ?? "",
-  });
-  return record.id as string;
+  try {
+    const record = await pb.collection("readme_generations").create({
+      user: data.userId,
+      projectName: data.projectName ?? "",
+      stack: data.stack ?? [],
+      dependenciesCount: data.dependenciesCount ?? 0,
+      scripts: data.scripts ?? [],
+      envVars: data.envVars ?? [],
+      deployment: data.deployment ?? [],
+      fileCount: data.fileCount ?? 0,
+      // Some PocketBase text fields reject an empty string even when the SDK
+      // and this app treat "" as valid ("not generated yet"); a single space
+      // satisfies "required" validation without visibly changing anything —
+      // the UI never renders this until status flips to "complete" anyway.
+      readme: data.readme || " ",
+      source: data.source ?? "zip",
+      sourceLabel: data.sourceLabel ?? "",
+      model: data.model ?? "claude-sonnet-5",
+      modelLabel: data.modelLabel ?? "",
+      templateName: data.templateName ?? "",
+      hasReference: Boolean(data.hasReference),
+      context: data.context ?? "",
+      status: data.status ?? "complete",
+      errorMessage: data.errorMessage ?? "",
+    });
+    return record.id as string;
+  } catch (err: any) {
+    // PocketBase's per-field validation detail lives on err.data.data (or
+    // err.response?.data on older SDK versions) — the top-level err.message
+    // is just a generic "Failed to create record."
+    const fieldErrors = err?.data?.data || err?.response?.data;
+    console.error("[saveGeneration] create failed", fieldErrors || err);
+    if (fieldErrors) {
+      throw new Error(`Failed to create generation: ${JSON.stringify(fieldErrors)}`);
+    }
+    throw err;
+  }
 }
 
 /**
